@@ -34,16 +34,11 @@ jobs:
       - name: Install dependencies
         run: npm install --omit=dev
       
-      - name: Sync latest migrations from kshipra-db
+      - name: Verify migrations
         run: |
-          # Clone kshipra-db repository to get latest migrations
-          git clone https://github.com/kshipra-ai/kshipra-db.git ../kshipra-db-temp
-          
-          # Copy migrations
-          mkdir -p migrations
-          cp ../kshipra-db-temp/flyway/sql/V*.sql migrations/
-          
-          echo "✅ Synced $(ls migrations/V*.sql | wc -l) migration files"
+          # Migrations are already in the repository
+          echo "✅ Found $(ls migrations/V*.sql 2>/dev/null | wc -l) migration files"
+          ls -lh migrations/V*.sql | tail -5
       
       - name: Package Lambda
         run: |
