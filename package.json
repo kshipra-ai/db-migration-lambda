@@ -1,0 +1,12 @@
+{
+  "name": "db-migration-lambda",
+  "version": "2.0.0",
+  "description": "Database migration Lambda using pg and flyway schema history",
+  "main": "index.js",
+  "scripts": {
+    "build": "powershell -File build.ps1"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

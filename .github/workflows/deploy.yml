@@ -1,0 +1,109 @@
+name: Deploy PROD Migrations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.js'
+      - 'package.json'
+      - 'migrations/**'
+  workflow_dispatch:
+
+jobs:
+  deploy-and-migrate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ca-central-1
+      
+      - name: Install dependencies
+        run: npm install --omit=dev
+      
+      - name: Sync latest migrations from kshipra-db
+        run: |
+          # Clone kshipra-db repository to get latest migrations
+          git clone https://github.com/kshipra-ai/kshipra-db.git ../kshipra-db-temp
+          
+          # Copy migrations
+          mkdir -p migrations
+          cp ../kshipra-db-temp/flyway/sql/V*.sql migrations/
+          
+          echo "✅ Synced $(ls migrations/V*.sql | wc -l) migration files"
+      
+      - name: Package Lambda
+        run: |
+          zip -r db-migration-lambda.zip \
+            index.js \
+            package.json \
+            package-lock.json \
+            node_modules \
+            migrations
+          
+          echo "✅ Package size: $(du -h db-migration-lambda.zip | cut -f1)"
+      
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name lambdaFn-db-migration-prod \
+            --zip-file fileb://db-migration-lambda.zip \
+            --query 'LastModified' \
+            --output text
+          
+          echo "✅ Lambda code deployed"
+          
+          # Wait for update to complete
+          aws lambda wait function-updated \
+            --function-name lambdaFn-db-migration-prod
+          
+          echo "✅ Lambda update completed"
+      
+      - name: Run migrations
+        run: |
+          echo "🚀 Invoking Lambda to run PROD migrations..."
+          
+          aws lambda invoke \
+            --function-name lambdaFn-db-migration-prod \
+            --log-type Tail \
+            output.json
+          
+          # Display results
+          cat output.json
+          
+          # Check if successful
+          STATUS=$(jq -r '.statusCode' output.json)
+          if [ "$STATUS" == "200" ]; then
+            BODY=$(jq -r '.body' output.json)
+            APPLIED=$(echo $BODY | jq -r '.applied')
+            SKIPPED=$(echo $BODY | jq -r '.skipped')
+            TOTAL=$(echo $BODY | jq -r '.total')
+            
+            echo ""
+            echo "✅ PROD Migrations Successful!"
+            echo "   Applied: $APPLIED new migrations"
+            echo "   Skipped: $SKIPPED migrations (already applied)"
+            echo "   Total: $TOTAL migrations in database"
+          else
+            echo "❌ Migration failed!"
+            echo $(jq -r '.body' output.json)
+            exit 1
+          fi
+      
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-results
+          path: output.json

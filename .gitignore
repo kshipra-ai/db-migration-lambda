@@ -1,0 +1,8 @@
+node_modules/
+db-migration-lambda.zip
+output.json
+output2.json
+fix_partners.sql
+sync-history.js
+.DS_Store
+*.log
