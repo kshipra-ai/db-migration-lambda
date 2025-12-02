@@ -61,15 +61,17 @@ CREATE TRIGGER trigger_campaigns_updated_at
 -- Grant permissions
 GRANT SELECT, INSERT, UPDATE, DELETE ON kshipra_core.campaigns TO kshipra_admin;
 
--- Insert sample campaigns for existing partners
+-- Insert single default campaign pointing to kshipraai.com
+-- This will be used when no other campaigns are available
 INSERT INTO kshipra_core.campaigns (partner_id, campaign_name, campaign_description, landing_url, reward_rate, max_daily_rewards)
 SELECT 
     partner_id,
-    brand_name || ' - Welcome Campaign' as campaign_name,
-    'Welcome campaign for new customers visiting ' || brand_name as campaign_description,
-    landing_url,
-    reward_rate,
-    max_daily_rewards
+    'Kshipra Default Campaign' as campaign_name,
+    'Default campaign - learn more about sustainable shopping with Kshipra' as campaign_description,
+    'https://www.kshipraai.com' as landing_url,
+    10 as reward_rate,
+    10 as max_daily_rewards
 FROM kshipra_core.partners
-WHERE is_active = true
+WHERE brand_name = 'Kshipra Universal'
+LIMIT 1
 ON CONFLICT DO NOTHING;
