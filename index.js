@@ -168,10 +168,10 @@ exports.handler = async (event) => {
         await client.query('ROLLBACK');
         
         // If the error indicates migration already applied or schema mismatch, mark as applied
+        // NOTE: Do NOT include 'does not exist' as that could mean a real missing dependency
         const isAlreadyApplied = error.message.includes('already exists') || 
                                   error.message.includes('violates check constraint') ||
                                   error.message.includes('editability test FAILED') ||
-                                  error.message.includes('does not exist') ||
                                   error.message.includes('reward_rate');
         
         if (isAlreadyApplied) {
