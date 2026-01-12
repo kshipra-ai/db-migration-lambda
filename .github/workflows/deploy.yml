@@ -6,8 +6,9 @@ on:
     paths:
       - 'index.js'
       - 'package.json'
-      - 'migrations/**'
   workflow_dispatch:
+  repository_dispatch:
+    types: [new-migration]
 
 jobs:
   deploy-and-migrate:
@@ -17,8 +18,23 @@ jobs:
       contents: read
     
     steps:
-      - name: Checkout code
+      - name: Checkout db-migration-lambda code
         uses: actions/checkout@v4
+      
+      - name: Checkout kshipra-db for migrations
+        uses: actions/checkout@v4
+        with:
+          repository: kshipra-ai/kshipra-db
+          path: kshipra-db
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Sync migrations from kshipra-db
+        run: |
+          echo "🔄 Syncing migrations from kshipra-db..."
+          rm -rf migrations/*.sql
+          cp kshipra-db/flyway/sql/V*.sql migrations/
+          echo "✅ Copied $(ls migrations/V*.sql | wc -l) migration files"
+          ls -lh migrations/V*.sql | tail -5
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,12 +49,6 @@ jobs:
       
       - name: Install dependencies
         run: npm install --omit=dev
-      
-      - name: Verify migrations
-        run: |
-          # Migrations are already in the repository
-          echo "✅ Found $(ls migrations/V*.sql 2>/dev/null | wc -l) migration files"
-          ls -lh migrations/V*.sql | tail -5
       
       - name: Package Lambda
         run: |
