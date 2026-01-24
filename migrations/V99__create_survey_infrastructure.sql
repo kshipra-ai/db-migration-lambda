@@ -190,7 +190,7 @@ SELECT
     'system'
 FROM kshipra_core.survey_providers 
 WHERE name = 'bitlabs'
-ON CONFLICT (provider_id, is_active, effective_from) DO NOTHING;
+ON CONFLICT DO NOTHING;
 
 -- Grant permissions to kshipra_admin (lambda user)
 -- Note: In dev/prod, lambda functions connect as kshipra_admin
