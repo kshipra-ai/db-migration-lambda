@@ -1,0 +1,32 @@
+﻿{
+    "queryOnly":  true,
+    "query":  {
+                  "value":  "-- V97__fix_referral_reward_type.sql\r\n-- Fix referral system configuration: change reward type from \u0027cash\u0027 to \u0027cashback\u0027\r\n-- to match database constraint which only allows: cashback, points, discount\r\n\r\nUPDATE kshipra_core.system_configurations\r\nSET config_value = jsonb_set(\r\n    jsonb_set(config_value, \u0027{referrer_reward,type}\u0027, \u0027\"cashback\"\u0027),\r\n    \u0027{referee_reward,type}\u0027, \u0027\"cashback\"\u0027\r\n)\r\nWHERE config_key = \u0027referral_system\u0027;\r\n",
+                  "PSPath":  "C:\\kshipra-codebase\\kshipra-db\\flyway\\sql\\V97__fix_referral_reward_type.sql",
+                  "PSParentPath":  "C:\\kshipra-codebase\\kshipra-db\\flyway\\sql",
+                  "PSChildName":  "V97__fix_referral_reward_type.sql",
+                  "PSDrive":  {
+                                  "CurrentLocation":  "kshipra-codebase\\db-migration-lambda",
+                                  "Name":  "C",
+                                  "Provider":  "Microsoft.PowerShell.Core\\FileSystem",
+                                  "Root":  "C:\\",
+                                  "Description":  "Windows",
+                                  "MaximumSize":  null,
+                                  "Credential":  "System.Management.Automation.PSCredential",
+                                  "DisplayRoot":  null
+                              },
+                  "PSProvider":  {
+                                     "ImplementingType":  "Microsoft.PowerShell.Commands.FileSystemProvider",
+                                     "HelpFile":  "System.Management.Automation.dll-Help.xml",
+                                     "Name":  "FileSystem",
+                                     "PSSnapIn":  "Microsoft.PowerShell.Core",
+                                     "ModuleName":  "Microsoft.PowerShell.Core",
+                                     "Module":  null,
+                                     "Description":  "",
+                                     "Capabilities":  52,
+                                     "Home":  "C:\\Users\\chait",
+                                     "Drives":  "C"
+                                 },
+                  "ReadCount":  1
+              }
+}
