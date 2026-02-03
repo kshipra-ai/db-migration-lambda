@@ -121,7 +121,7 @@ BEGIN
         UPDATE kshipra_core.qr_scans
         SET points_awarded = v_scan_reward_points
         WHERE user_id::VARCHAR = p_user_id 
-          AND campaign_id = p_campaign_id
+          AND campaign_id = p_campaign_id::VARCHAR
           AND points_awarded = 0
           AND scanned_at >= CURRENT_DATE;
     ELSE
@@ -129,7 +129,7 @@ BEGIN
         UPDATE kshipra_core.qr_scans
         SET points_awarded = 0
         WHERE user_id::VARCHAR = p_user_id 
-          AND campaign_id = p_campaign_id
+          AND campaign_id = p_campaign_id::VARCHAR
           AND scanned_at >= CURRENT_DATE;
     END IF;
 
