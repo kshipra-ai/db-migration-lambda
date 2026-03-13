@@ -12,6 +12,6 @@ CREATE INDEX IF NOT EXISTS idx_app_feedback_user_id   ON kshipra_core.app_feedba
 CREATE INDEX IF NOT EXISTS idx_app_feedback_rating    ON kshipra_core.app_feedback (rating);
 CREATE INDEX IF NOT EXISTS idx_app_feedback_created_at ON kshipra_core.app_feedback (created_at DESC);
 
--- Grant access to the lambda user
-GRANT SELECT, INSERT ON kshipra_core.app_feedback TO kshipra_lambda;
-GRANT USAGE, SELECT ON SEQUENCE kshipra_core.app_feedback_id_seq TO kshipra_lambda;
+-- Grant access to the lambda DB user
+GRANT SELECT, INSERT ON kshipra_core.app_feedback TO kshipra_admin;
+GRANT USAGE, SELECT ON SEQUENCE kshipra_core.app_feedback_id_seq TO kshipra_admin;
