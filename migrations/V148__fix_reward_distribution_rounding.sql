@@ -1,6 +1,7 @@
 -- V148: Fix reward distribution rounding - ROUND on all three splits can over-allocate by 1-2 cents
 -- Example: 7 cents at 50/25/25 → ROUND(3.5)=4 + ROUND(1.75)=2 + ROUND(1.75)=2 = 8 (should be 7)
 -- Fix: FLOOR user_rewards and cashback, compute kshipra commission as remainder so total is exact
+-- NOTE: Based on V143 (preserves double-reward guard, V129 COALESCE duration, V130 COALESCE profile)
 
 DROP FUNCTION IF EXISTS kshipra_core.complete_deep_link_view_session(VARCHAR, UUID, INTEGER);
 
@@ -19,12 +20,13 @@ RETURNS TABLE(
 DECLARE
     v_required_duration INTEGER;
     v_is_completed BOOLEAN := FALSE;
+    v_already_completed BOOLEAN := FALSE;
     v_reward_rate INTEGER;
     v_scan_reward_points INTEGER;
     v_points_awarded INTEGER := 0;
     v_partner_id UUID;
     v_total_points INTEGER := 0;
-    
+
     -- Reward distribution variables
     v_user_rewards_pct DECIMAL(5,2);
     v_cashback_pct DECIMAL(5,2);
@@ -33,6 +35,26 @@ DECLARE
     v_cashback_cents INTEGER := 0;
     v_kshipra_commission_cents INTEGER := 0;
 BEGIN
+    -- V143 FIX: Check upfront if this campaign was already completed by this user.
+    -- This prevents double-rewarding when the swipe chain navigates circular-rotation
+    -- campaigns with alreadyViewed=false (the swipe chain bug introduced alongside V128).
+    SELECT COALESCE(udlv.is_completed, false)
+    INTO v_already_completed
+    FROM kshipra_core.user_deep_link_views udlv
+    WHERE udlv.user_id::VARCHAR = p_user_id
+      AND udlv.campaign_id = p_campaign_id;
+
+    IF v_already_completed THEN
+        -- Already completed - return zeros immediately, don't touch user_profile
+        SELECT COALESCE(up.rewards_earned, 0)
+        INTO v_total_points
+        FROM kshipra_core.user_profile up
+        WHERE up.user_id::VARCHAR = p_user_id;
+
+        RETURN QUERY SELECT false, 0, 0, 0, v_total_points;
+        RETURN;
+    END IF;
+
     -- Get campaign details and brand's configured scan_reward_points
     SELECT 
         c.min_view_duration_seconds,
@@ -51,6 +73,9 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Campaign not found';
     END IF;
+
+    -- V129 FIX: Default NULL min_view_duration_seconds to 10 seconds
+    v_required_duration := COALESCE(v_required_duration, 10);
 
     -- Check if view duration meets requirement
     IF p_actual_duration_seconds >= v_required_duration THEN
@@ -78,12 +103,12 @@ BEGIN
         END IF;
 
         -- Calculate distributed amounts (points are in cents)
-        -- FLOOR user_rewards and cashback; kshipra gets the remainder so total is always exact
+        -- V148 FIX: FLOOR user_rewards and cashback; kshipra gets the remainder so total is always exact
         v_user_rewards_cents := FLOOR(v_scan_reward_points * v_user_rewards_pct / 100);
         v_cashback_cents := FLOOR(v_scan_reward_points * v_cashback_pct / 100);
         v_kshipra_commission_cents := v_scan_reward_points - v_user_rewards_cents - v_cashback_cents;
 
-        -- Update view session as completed
+        -- Mark view session as completed
         UPDATE kshipra_core.user_deep_link_views udlv
         SET 
             completed_at = CURRENT_TIMESTAMP,
@@ -92,14 +117,14 @@ BEGIN
           AND udlv.campaign_id = p_campaign_id
           AND udlv.is_completed = FALSE;
 
-        -- Update user profile with distributed rewards (NO updated_at column)
+        -- V130 FIX: Use COALESCE so NULL columns (new users) are treated as 0
         UPDATE kshipra_core.user_profile up
         SET 
-            rewards_earned = up.rewards_earned + v_user_rewards_cents,
-            cash_balance = up.cash_balance + (v_cashback_cents::DECIMAL / 100)
+            rewards_earned = COALESCE(up.rewards_earned, 0) + v_user_rewards_cents,
+            cash_balance = COALESCE(up.cash_balance, 0) + (v_cashback_cents::DECIMAL / 100)
         WHERE up.user_id::VARCHAR = p_user_id;
 
-        -- Record Kshipra's commission (using CORRECT columns from V82)
+        -- Record Kshipra's commission
         INSERT INTO kshipra_core.kshipra_earnings (
             user_id,
             campaign_id,
@@ -117,21 +142,21 @@ BEGIN
             v_kshipra_commission_pct,
             CURRENT_TIMESTAMP
         );
-        
-        -- V117 FEATURE: Update the qr_scans table with actual points awarded
-        UPDATE kshipra_core.qr_scans
+
+        -- Update the qr_scans table with actual points awarded
+        UPDATE kshipra_core.qr_scans qs
         SET points_awarded = v_scan_reward_points
-        WHERE user_id::VARCHAR = p_user_id 
-          AND campaign_id = p_campaign_id
-          AND points_awarded = 0
-          AND scanned_at >= CURRENT_DATE;
+        WHERE qs.user_id::VARCHAR = p_user_id
+          AND qs.campaign_id = p_campaign_id
+          AND qs.points_awarded = 0
+          AND qs.scanned_at >= CURRENT_DATE;
     ELSE
-        -- V117 FEATURE: View not completed - update scan record with 0 points
-        UPDATE kshipra_core.qr_scans
+        -- View not completed - update scan record with 0 points
+        UPDATE kshipra_core.qr_scans qs
         SET points_awarded = 0
-        WHERE user_id::VARCHAR = p_user_id 
-          AND campaign_id = p_campaign_id
-          AND scanned_at >= CURRENT_DATE;
+        WHERE qs.user_id::VARCHAR = p_user_id
+          AND qs.campaign_id = p_campaign_id
+          AND qs.scanned_at >= CURRENT_DATE;
     END IF;
 
     -- Get user's total rewards points
@@ -154,4 +179,4 @@ $$ LANGUAGE plpgsql;
 GRANT EXECUTE ON FUNCTION kshipra_core.complete_deep_link_view_session TO kshipra_admin;
 
 COMMENT ON FUNCTION kshipra_core.complete_deep_link_view_session IS 
-'V148: Fix rounding - FLOOR user/cashback, kshipra gets remainder so splits always sum to exact total';
+'V148: Fix rounding (FLOOR+remainder). Preserves V143 double-reward guard, V129 duration COALESCE, V130 profile COALESCE.';
