@@ -27,5 +27,5 @@ FROM kshipra_core.location_qr_codes lqc
 JOIN kshipra_core.qr_campaigns qc ON qc.qr_code_id = lqc.qr_code_id
 ON CONFLICT DO NOTHING;
 
--- Grant lambda user access
-GRANT SELECT, INSERT, UPDATE ON kshipra_core.qr_assignment_history TO lambda_user;
+-- Grant admin user access
+GRANT SELECT, INSERT, UPDATE ON kshipra_core.qr_assignment_history TO kshipra_admin;
