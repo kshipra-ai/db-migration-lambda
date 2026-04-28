@@ -82,8 +82,6 @@ Preserved by default:
 - `reward_distribution_config`
 - `survey_revenue_config`
 - `survey_providers`
-- `pitch_kb_changes`, `pitch_ceo_context`, `pitch_custom_questions`
-  (admin tooling — review and remove from preserve list if you want them cleared)
 
 To change what gets preserved, edit the `preserve_tables` array near the top
 of `pre_launch_data_reset.sql`.

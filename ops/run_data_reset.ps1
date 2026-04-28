@@ -4,7 +4,7 @@
 # Manually invoke a destructive SQL reset against the prod database via the
 # existing db-migration-lambda's queryOnly mode.
 #
-# This script does NOT run automatically — it must be invoked by a human and
+# This script does NOT run automatically. It must be invoked by a human and
 # requires typing a confirmation phrase before it sends anything to AWS.
 #
 # USAGE:
@@ -13,16 +13,17 @@
 #   .\run_data_reset.ps1 -Execute -SqlFile X.sql    # use an alternate SQL file
 #
 # REQUIREMENTS:
-#   • AWS CLI configured with a profile that can invoke lambdaFn-db-migration-prod
-#   • Default profile is "kshipra-dev" (same as the rest of the repo)
+#   - AWS CLI configured with a profile that can invoke lambdaFn-db-migration-prod
+#   - Default profile is "kshipra-dev" (same as the rest of the repo)
 # =============================================================================
 
 [CmdletBinding()]
 param(
   [switch] $Execute,
+  [switch] $Force,
   [string] $SqlFile      = "$PSScriptRoot\pre_launch_data_reset.sql",
   [string] $FunctionName = "lambdaFn-db-migration-prod",
-  [string] $Profile      = "kshipra-dev",
+  [string] $AwsProfile   = "kshipra-dev",
   [string] $Region       = "ca-central-1"
 )
 
@@ -52,34 +53,42 @@ if ([string]::IsNullOrWhiteSpace($sqlContent)) {
   exit 1
 }
 
-Write-Host "  SQL file        : $SqlFile"
-Write-Host "  SQL bytes       : $($sqlContent.Length)"
-Write-Host "  Target Lambda   : $FunctionName"
-Write-Host "  AWS profile     : $Profile"
-Write-Host "  AWS region      : $Region"
+$sqlBytes = $sqlContent.Length
+$sqlLines = ($sqlContent -split "`n").Count
+
+Write-Host ("  SQL file        : {0}" -f $SqlFile)
+Write-Host ("  SQL bytes       : {0}" -f $sqlBytes)
+Write-Host ("  SQL line count  : {0}" -f $sqlLines)
+Write-Host ("  Target Lambda   : {0}" -f $FunctionName)
+Write-Host ("  AWS profile     : {0}" -f $AwsProfile)
+Write-Host ("  AWS region      : {0}" -f $Region)
 
 try {
-  $caller = aws sts get-caller-identity --profile $Profile --region $Region --output json 2>$null | ConvertFrom-Json
-  if ($caller) {
-    Write-Host "  AWS account     : $($caller.Account)"
-    Write-Host "  AWS arn         : $($caller.Arn)"
+  $callerJson = aws sts get-caller-identity --profile $AwsProfile --region $Region --output json 2>$null
+  if ($callerJson) {
+    $caller = $callerJson | ConvertFrom-Json
+    Write-Host ("  AWS account     : {0}" -f $caller.Account)
+    Write-Host ("  AWS arn         : {0}" -f $caller.Arn)
   }
 } catch {
-  Write-Warning "Could not verify AWS credentials (continuing — Lambda invoke will fail if creds are bad)."
+  Write-Warning "Could not verify AWS credentials (continuing; Lambda invoke will fail if creds are bad)."
 }
 
 # -----------------------------------------------------------------------------
 # 2. Show preview
 # -----------------------------------------------------------------------------
 Write-Section "SQL preview (first 40 lines)"
-$sqlContent.Split("`n") | Select-Object -First 40 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
-Write-Host "  ... ($($sqlContent.Split("`n").Count) total lines)"
+$previewLines = ($sqlContent -split "`n") | Select-Object -First 40
+foreach ($line in $previewLines) {
+  Write-Host ("  {0}" -f $line) -ForegroundColor DarkGray
+}
+Write-Host ("  ... ({0} total lines)" -f $sqlLines)
 
 # -----------------------------------------------------------------------------
 # 3. Dry-run early exit
 # -----------------------------------------------------------------------------
 if (-not $Execute) {
-  Write-Section "DRY RUN — no Lambda invoke"
+  Write-Section "DRY RUN (no Lambda invoke)"
   Write-Host "  Re-run with -Execute to actually run this against prod." -ForegroundColor Yellow
   exit 0
 }
@@ -89,14 +98,18 @@ if (-not $Execute) {
 # -----------------------------------------------------------------------------
 Write-Section "DESTRUCTIVE ACTION CONFIRMATION"
 Write-Host "  You are about to wipe USER DATA from kshipra_production." -ForegroundColor Red
-Write-Host "  • Configuration tables and migration history are preserved." -ForegroundColor Yellow
-Write-Host "  • Have you taken an RDS snapshot in the last hour? (recommended)" -ForegroundColor Yellow
-Write-Host "  • Have you cleared / planned to clear the Cognito user pool? (recommended)" -ForegroundColor Yellow
+Write-Host "  - Configuration tables and migration history are preserved." -ForegroundColor Yellow
+Write-Host "  - Have you taken an RDS snapshot in the last hour? (recommended)" -ForegroundColor Yellow
+Write-Host "  - Have you cleared / planned to clear the Cognito user pool? (recommended)" -ForegroundColor Yellow
 Write-Host ""
-$confirm = Read-Host "Type RESET-PROD-DATA to continue (anything else aborts)"
-if ($confirm -ne "RESET-PROD-DATA") {
-  Write-Host "Aborted." -ForegroundColor Yellow
-  exit 1
+if ($Force) {
+  Write-Host "  -Force passed; skipping interactive confirmation." -ForegroundColor Magenta
+} else {
+  $confirm = Read-Host "Type RESET-PROD-DATA to continue (anything else aborts)"
+  if ($confirm -ne "RESET-PROD-DATA") {
+    Write-Host "Aborted." -ForegroundColor Yellow
+    exit 1
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -104,29 +117,38 @@ if ($confirm -ne "RESET-PROD-DATA") {
 # -----------------------------------------------------------------------------
 Write-Section "Invoking Lambda"
 
+# Use .NET JavaScriptSerializer instead of ConvertTo-Json: PowerShell's built-in
+# JSON converter explodes payload size on multi-line strings (~500x in PS 5.1).
+Add-Type -AssemblyName System.Web.Extensions
+$serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+$serializer.MaxJsonLength = 100MB
 $payloadObj  = @{ queryOnly = $true; query = $sqlContent }
-$payloadJson = $payloadObj | ConvertTo-Json -Compress -Depth 5
+$payloadJson = $serializer.Serialize($payloadObj)
 
 $tmpPayload = New-TemporaryFile
 $tmpResp    = New-TemporaryFile
 try {
-  Set-Content -Path $tmpPayload -Value $payloadJson -Encoding UTF8 -NoNewline
+  # UTF-8 WITHOUT BOM: Lambda's JSON.parse rejects the BOM that
+  # PowerShell's Set-Content -Encoding UTF8 writes by default.
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($tmpPayload, $payloadJson, $utf8NoBom)
 
-  Write-Host "  Payload bytes   : $($payloadJson.Length)"
-  Write-Host "  Function name   : $FunctionName"
+  $payloadFileSize = (Get-Item $tmpPayload).Length
+  Write-Host ("  Payload bytes   : {0}" -f $payloadFileSize)
+  Write-Host ("  Function name   : {0}" -f $FunctionName)
   Write-Host "  Invoking..." -ForegroundColor Cyan
 
   $invokeResult = aws lambda invoke `
     --function-name $FunctionName `
     --payload "fileb://$tmpPayload" `
     --cli-binary-format raw-in-base64-out `
-    --profile $Profile `
+    --profile $AwsProfile `
     --region  $Region `
     --output  json `
     "$tmpResp" 2>&1
 
   if ($LASTEXITCODE -ne 0) {
-    Write-Error "Lambda invoke failed: $invokeResult"
+    Write-Error ("Lambda invoke failed: {0}" -f $invokeResult)
     exit 1
   }
 
@@ -141,10 +163,10 @@ try {
     $response = $responseRaw | ConvertFrom-Json
     if ($response.statusCode -eq 200) {
       Write-Host ""
-      Write-Host "SUCCESS — review CloudWatch /aws/lambda/$FunctionName for full notice output." -ForegroundColor Green
+      Write-Host ("SUCCESS - review CloudWatch /aws/lambda/{0} for full notice output." -f $FunctionName) -ForegroundColor Green
     } else {
       Write-Host ""
-      Write-Host "FAILED with statusCode $($response.statusCode)." -ForegroundColor Red
+      Write-Host ("FAILED with statusCode {0}." -f $response.statusCode) -ForegroundColor Red
       exit 1
     }
   } catch {
@@ -156,7 +178,7 @@ try {
 }
 
 Write-Section "Next steps"
-Write-Host "  1. Tail logs: aws logs tail /aws/lambda/$FunctionName --profile $Profile --region $Region --since 5m"
+Write-Host ("  1. Tail logs: aws logs tail /aws/lambda/{0} --profile {1} --region {2} --since 5m" -f $FunctionName, $AwsProfile, $Region)
 Write-Host "  2. Spot-check counts:"
 Write-Host "       SELECT relname, n_live_tup FROM pg_stat_user_tables"
 Write-Host "       WHERE schemaname='kshipra_core' ORDER BY n_live_tup DESC;"
