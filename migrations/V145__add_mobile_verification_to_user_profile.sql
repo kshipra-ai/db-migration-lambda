@@ -1,4 +1,4 @@
--- V145: Add mobile verification fields to user_profile
+-- V140: Add mobile verification fields to user_profile
 -- Mobile verification is required to complete the user profile.
 -- One phone number may only be verified on one account at a time.
 
