@@ -4,7 +4,8 @@
   "description": "Database migration Lambda using pg and flyway schema history",
   "main": "index.js",
   "scripts": {
-    "build": "powershell -File build.ps1"
+    "build": "powershell -File build.ps1",
+    "test": "node test-brand-revenue-migrations.js"
   },
   "dependencies": {
     "@aws-sdk/client-lambda": "^3.980.0",
