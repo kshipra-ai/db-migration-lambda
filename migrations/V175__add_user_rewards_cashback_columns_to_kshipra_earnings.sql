@@ -1,80 +1,12 @@
--- V175: Persist the full four-way scan earning distribution.
--- Before this, complete_deep_link_view_session calculated user reward points
--- and cashback but only stored total, Kshipra commission, and business share
--- in kshipra_earnings. Location analytics needs the full ledger.
+-- V175: Add user_rewards_points, user_rewards_percentage, cashback_cents, cashback_percentage
+-- columns to kshipra_earnings so per-event breakdown queries work correctly.
+-- V174 stored proc computes these values but never persisted them to the table.
 
 ALTER TABLE kshipra_core.kshipra_earnings
-    ADD COLUMN IF NOT EXISTS user_rewards_points INT NOT NULL DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS cashback_cents INT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS user_rewards_points    INTEGER      NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS user_rewards_percentage NUMERIC(5,2) NOT NULL DEFAULT 0.00,
-    ADD COLUMN IF NOT EXISTS cashback_percentage NUMERIC(5,2) NOT NULL DEFAULT 0.00;
-
-WITH cfg AS (
-    SELECT
-        COALESCE(user_rewards_percentage, 50.00) AS user_pct,
-        COALESCE(cashback_percentage, 25.00) AS cash_pct
-    FROM kshipra_core.reward_distribution_config
-    WHERE is_active = TRUE
-    ORDER BY created_at DESC
-    LIMIT 1
-),
-active_cfg AS (
-    SELECT user_pct, cash_pct FROM cfg
-    UNION ALL
-    SELECT 50.00, 25.00
-    WHERE NOT EXISTS (SELECT 1 FROM cfg)
-),
-split AS (
-    SELECT
-        ke.earning_id,
-        COALESCE(ke.total_reward_points, 0) AS total_points,
-        GREATEST(
-            COALESCE(ke.total_reward_points, 0)
-            - COALESCE(ke.commission_points, 0)
-            - COALESCE(ke.business_share_points, 0),
-            0
-        ) AS remaining_user_value,
-        active_cfg.user_pct,
-        active_cfg.cash_pct,
-        NULLIF(active_cfg.user_pct + active_cfg.cash_pct, 0) AS user_cash_pct_total
-    FROM kshipra_core.kshipra_earnings ke
-    CROSS JOIN active_cfg
-    WHERE ke.source_type = 'scan_earn'
-),
-calc AS (
-    SELECT
-        earning_id,
-        total_points,
-        CASE
-            WHEN user_cash_pct_total IS NULL THEN 0
-            ELSE FLOOR(remaining_user_value * user_pct / user_cash_pct_total)::INT
-        END AS user_rewards_points,
-        CASE
-            WHEN user_cash_pct_total IS NULL THEN remaining_user_value::INT
-            ELSE (
-                remaining_user_value
-                - FLOOR(remaining_user_value * user_pct / user_cash_pct_total)::INT
-            )::INT
-        END AS cashback_cents
-    FROM split
-)
-UPDATE kshipra_core.kshipra_earnings ke
-SET
-    user_rewards_points = calc.user_rewards_points,
-    cashback_cents = calc.cashback_cents,
-    user_rewards_percentage = CASE
-        WHEN calc.total_points > 0 THEN ROUND((calc.user_rewards_points::NUMERIC / calc.total_points) * 100, 2)
-        ELSE 0.00
-    END,
-    cashback_percentage = CASE
-        WHEN calc.total_points > 0 THEN ROUND((calc.cashback_cents::NUMERIC / calc.total_points) * 100, 2)
-        ELSE 0.00
-    END
-FROM calc
-WHERE ke.earning_id = calc.earning_id
-  AND ke.source_type = 'scan_earn'
-  AND ke.user_rewards_points = 0
-  AND ke.cashback_cents = 0;
+    ADD COLUMN IF NOT EXISTS cashback_cents          INTEGER      NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS cashback_percentage     NUMERIC(5,2) NOT NULL DEFAULT 0.00;
 
 DROP FUNCTION IF EXISTS kshipra_core.complete_deep_link_view_session(VARCHAR, UUID, INTEGER);
 
@@ -83,7 +15,7 @@ CREATE OR REPLACE FUNCTION kshipra_core.complete_deep_link_view_session(
     p_campaign_id UUID,
     p_actual_duration_seconds INTEGER
 )
-RETURNS TABLE (
+RETURNS TABLE(
     is_completed BOOLEAN,
     points_awarded INTEGER,
     user_rewards_points INTEGER,
@@ -137,12 +69,14 @@ BEGIN
         c.reward_rate,
         c.partner_id,
         COALESCE((p.config->>'scan_reward_points')::INTEGER, c.reward_rate) as scan_points
-    INTO v_required_duration, v_reward_rate, v_partner_id, v_scan_reward_points
+    INTO
+        v_required_duration,
+        v_reward_rate,
+        v_partner_id,
+        v_scan_reward_points
     FROM kshipra_core.campaigns c
     LEFT JOIN kshipra_core.partners p ON c.partner_id = p.partner_id
-    WHERE c.campaign_id = p_campaign_id
-      AND c.is_active = true
-      AND c.deleted = false;
+    WHERE c.campaign_id = p_campaign_id;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Campaign not found';
@@ -150,6 +84,7 @@ BEGIN
 
     v_required_duration := COALESCE(v_required_duration, 10);
 
+    -- First try the exact scan row for this campaign.
     SELECT qs.scan_id, qs.location_id, qs.qr_code_id
     INTO v_scan_id, v_location_id, v_qr_code_id
     FROM kshipra_core.qr_scans qs
@@ -159,6 +94,7 @@ BEGIN
     ORDER BY qs.scanned_at DESC
     LIMIT 1;
 
+    -- Chained brand ads: carry the recent physical QR attribution.
     IF v_scan_id IS NULL THEN
         SELECT qs.scan_id, qs.location_id, qs.qr_code_id
         INTO v_scan_id, v_location_id, v_qr_code_id
@@ -338,12 +274,10 @@ $$ LANGUAGE plpgsql;
 GRANT EXECUTE ON FUNCTION kshipra_core.complete_deep_link_view_session TO kshipra_admin;
 
 COMMENT ON COLUMN kshipra_core.kshipra_earnings.user_rewards_points IS
-'User reward points credited for this earning event.';
+'Portion of total_reward_points credited to the scanning user as rewards.';
+
 COMMENT ON COLUMN kshipra_core.kshipra_earnings.cashback_cents IS
-'Cash credited to the viewer, in cents, for this earning event.';
-COMMENT ON COLUMN kshipra_core.kshipra_earnings.user_rewards_percentage IS
-'User rewards percentage used when this earning event was credited.';
-COMMENT ON COLUMN kshipra_core.kshipra_earnings.cashback_percentage IS
-'Cashback percentage used when this earning event was credited.';
+'Portion of total_reward_points converted to cash balance for the scanning user.';
+
 COMMENT ON FUNCTION kshipra_core.complete_deep_link_view_session IS
-'V175: Credits and persists the full scan earning split: user points, user cash, Kshipra commission, and QR host business share.';
+'V175: Persists user_rewards_points/percentage and cashback_cents/percentage to kshipra_earnings for per-event breakdown analytics.';
