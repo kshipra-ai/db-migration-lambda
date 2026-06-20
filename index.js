@@ -9,7 +9,7 @@ const dbConfig = {
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: true }
 };
 
 function calculateChecksum(sql) {
@@ -166,20 +166,15 @@ exports.handler = async (event) => {
         appliedCount++;
       } catch (error) {
         await client.query('ROLLBACK');
-        
-        // If the error indicates migration already applied or schema mismatch, mark as applied
-        // NOTE: Do NOT include 'does not exist' as that could mean a real missing dependency
-        const isAlreadyApplied = error.message.includes('already exists') || 
-                                  error.message.includes('violates check constraint') ||
-                                  error.message.includes('editability test FAILED') ||
-                                  error.message.includes('reward_rate');
-        
-        if (isAlreadyApplied) {
-          console.log('V' + mig.version + ' already applied or blocked by schema state, marking as applied');
+
+        // Only skip if the object genuinely already exists (applied outside this runner).
+        // All other errors are real failures — surface them so they get fixed.
+        if (error.message.includes('already exists')) {
+          console.warn('V' + mig.version + ' skipped — object already exists, marking as applied:', error.message);
           try {
             currentRank++;
             await client.query(`
-              INSERT INTO kshipra_core.flyway_schema_history 
+              INSERT INTO kshipra_core.flyway_schema_history
               (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             `, [currentRank, mig.version, mig.description, 'SQL', mig.filename, checksum, 'lambda-skipped', 0, true]);
